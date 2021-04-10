@@ -186,8 +186,6 @@ void dns_answer_zero(struct mg_connection* connection, struct mg_dns_rr* record)
     header->flags = 0;
 
     struct dns_answer* answer = (struct dns_answer*)((char*)answer_data + connection->recv.len);
-    unsigned char* q = (unsigned char*)answer_data + connection->recv.len;
-
     answer->pname = ((uint16_t)0x0c << 8) | 0xc0;
     answer->atype = mg_htons(record->atype);
     answer->aclass = mg_htons(record->aclass);
