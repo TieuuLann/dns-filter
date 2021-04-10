@@ -59,26 +59,49 @@ bool set_socket_buf(SOCKET socket, int rcvSize, int sndSize)
     return (r1 == 0 && r2 == 0);
 }
 
-bool dns_parse_question(const uint8_t* buf, size_t len, size_t ofs, struct mg_dns_rr* rr, char* name, size_t name_len) 
+bool dns_parse(bool is_question, const uint8_t* buf, size_t len, size_t ofs, struct mg_dns_rr* record, char* name, size_t name_len) 
 {
-    const struct mg_dns_header* h = (struct mg_dns_header*)buf;
+    const struct mg_dns_header* header = (struct mg_dns_header*)buf;
     const uint8_t* s = buf + ofs, *e = &buf[len];
-    if (len < sizeof(*h) || len > 512 || s >= e)
+    if (len < sizeof(*header) || len > 512 || s >= e)
         return false;
 
-    if (mg_ntohs(h->num_questions) > 1 || mg_ntohs(h->num_answers) > 0)
+    uint16_t num_answers = mg_ntohs(header->num_answers);
+    if (mg_ntohs(header->num_questions) > 1 || num_answers > (is_question ? 0 : 10))
         return false;
 
-    memset(rr, 0, sizeof(*rr));
-    if ((rr->nlen = (uint16_t)mg_dns_parse_name(buf, len, ofs, name, name_len)) == 0)
+    memset(record, 0, sizeof(*record));
+    if ((record->nlen = (uint16_t)mg_dns_parse_name(buf, len, ofs, name, name_len)) == 0)
         return false;
 
-    s += rr->nlen + 4;
+    s += record->nlen + 4;
     if (s > e) 
         return false;
 
-    rr->atype = ((uint16_t)s[-4] << 8) | s[-3];
-    rr->aclass = ((uint16_t)s[-2] << 8) | s[-1];
+    record->atype = ((uint16_t)s[-4] << 8) | s[-3];
+    record->aclass = ((uint16_t)s[-2] << 8) | s[-1];
+    if (is_question)
+        return true;
+
+    for (uint16_t i = 0; i < num_answers; i++)
+    {
+        s += 12;
+        if (s > e) 
+            return false;
+
+        record->alen = ((uint16_t)s[-2] << 8) | s[-1];
+        
+        if (record->atype == 1 && record->alen != 4)
+            return false;
+
+        if (record->atype == 28 && record->alen != 16)
+            return false;
+
+        s += record->alen;
+        if (s > e)
+            return false;
+    }
+
     return true;
 }
 
@@ -141,13 +164,17 @@ void dns_resolved(struct mg_connection* connection, int event, void* event_data,
         struct mg_dns_message message;
         int resolved = 0;
 
-        if (mg_dns_parse(connection->recv.buf, connection->recv.len, &message))
+        struct mg_dns_rr record;
+        if (dns_parse(false, connection->recv.buf, connection->recv.len, dns_header_len, &record, NULL, 0))
         {
-            struct dns_item*item, * tmp;
-            for (item = dns_queue; item != NULL; item = tmp)
+            struct mg_dns_header* header = (struct mg_dns_header*)connection->recv.buf;
+            uint16_t txnid = mg_ntohs(header->txnid);
+
+            struct dns_item*item, * next;
+            for (item = dns_queue; item != NULL; item = next)
             {
-                tmp = item->next;
-                if (item->txnid != message.txnid)
+                next = item->next;
+                if (item->txnid != txnid)
                     continue;
 
                 struct mg_dns_header* header = (struct mg_dns_header*)connection->recv.buf;
@@ -213,7 +240,7 @@ void dns_listen(struct mg_connection* connection, int event, void* event_data, v
         {
             struct mg_dns_rr record;
             char dns_name[dns_name_max];
-            if (dns_parse_question(connection->recv.buf, connection->recv.len, dns_header_len, &record, &dns_name, dns_name_max))
+            if (dns_parse(true, connection->recv.buf, connection->recv.len, dns_header_len, &record, &dns_name, dns_name_max))
             {
                 if (dns_check_filter(dns_name, &record))
                     dns_answer_zero(connection, &record);
