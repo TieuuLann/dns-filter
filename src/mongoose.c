@@ -3162,17 +3162,18 @@ void mg_mgr_udp_poll(struct mg_mgr* mgr, int ms)
 {
     mg_iotest(mgr, ms);
 
-    struct mg_connection *c, *next;
-    for (c = mgr->conns; c != NULL; c = next)
+    struct mg_connection *connection, *next;
+    for (connection = mgr->conns; connection != NULL; connection = next)
     {
-        next = c->next;
-        mg_call(c, MG_EV_POLL, NULL);
+        next = connection->next;
+        mg_call(connection, MG_EV_POLL, NULL);
 
-        if (c->is_readable)
-            read_conn(c, ll_read);
+        if (connection->is_readable)
+            read_conn(connection, ll_read);
 
-        if (c->is_closing)
-            c->is_closing = 0;
+        //always listen
+        if (connection->is_closing)
+            connection->is_closing = 0;
     }
 }
 

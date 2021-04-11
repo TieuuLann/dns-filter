@@ -1,16 +1,20 @@
 #include <winsock2.h>
 #include <mswsock.h>
 #include "mongoose.h"
+#include "uthash.h"
 
-#define dns_timeout 1000
+#define dns_timeout 500
 #define dns_name_max 256
-#define dns_queue_max 65535
+#define dns_queue_max 65536
 #define dns_header_len sizeof(struct mg_dns_header)
+
+#define socket_timeout 1000
 #define socket_buf_size (512 * 1024)
 
 struct dns_item
 {
-    struct dns_queue_item* next;
+    UT_hash_handle hh;
+
     unsigned long expire;
     uint16_t txnid;
 
@@ -38,9 +42,9 @@ struct mg_connection* dns_connection = NULL;
 struct mg_connection* dns_ext_connection = NULL;
 
 struct dns_item* dns_queue = NULL;
-struct dns_item* dns_queue_tail = NULL;
 uint32_t dns_queue_len = 0;
-uint16_t dns_txnid = 1;
+uint16_t dns_queue_txnid = 0;
+unsigned long dns_queue_clean_time = 0;
 
 bool fix_udp_behavior(SOCKET socket)
 {
@@ -107,85 +111,90 @@ bool dns_parse(bool is_question, const uint8_t* buf, size_t len, size_t ofs, str
 
 struct dns_item* dns_queue_add(struct mg_addr* peer, uint16_t peer_txnid)
 {
-    struct dns_item* item = (struct dns_item*)calloc(1, sizeof(*item));
+    struct dns_item* item = NULL;
 
-    item->next = NULL;
+    HASH_FIND_UINT16(dns_queue, &dns_queue_txnid, item);
+    if (item != NULL)
+        return NULL;
+
+    item = (struct dns_item*)calloc(1, sizeof(*item));
+    item->txnid = dns_queue_txnid;
     item->expire = mg_millis() + dns_timeout;
-    item->txnid = dns_txnid;
     item->peer = *peer;
-    item->peer_txnid = peer_txnid;   
+    item->peer_txnid = peer_txnid;
 
-    if (dns_queue == NULL)
-        dns_queue = item;
+    HASH_ADD_UINT16(dns_queue, txnid, item);
 
-    if (dns_queue_tail != NULL)
-        dns_queue_tail->next = item;
-
-    dns_queue_tail = item;
+    dns_queue_txnid++;
     dns_queue_len++;
-
-    if (++dns_txnid == 0)
-        dns_txnid = 1;
 
     return item;
 }
 
 void dns_queue_remove(struct dns_item* item)
 {
-    struct dns_item** it = &dns_queue;
-    while (*it != item) 
-        it = &(*it)->next;
-
-    if (*it == dns_queue_tail)
-        dns_queue_tail = NULL;
-
-    *it = item->next;
+    HASH_DEL(dns_queue, item);
     free(item);
 
     dns_queue_len--;
+}
+
+void dns_queue_clean_expired()
+{
+    if (dns_queue == NULL)
+        return;
+
+    unsigned long now = mg_millis();
+    unsigned long past = now - dns_queue_clean_time;
+
+    if (past > dns_timeout)
+    {
+        dns_queue_clean_time = now;
+
+        struct dns_item* item, * next;
+        HASH_ITER(hh, dns_queue, item, next)
+        {
+            if (now > item->expire)
+                dns_queue_remove(item);
+        }
+    }
+}
+
+void dns_queue_answer(struct mg_connection* connection)
+{
+    struct mg_dns_rr record;
+    if (dns_parse(false, connection->recv.buf, connection->recv.len, dns_header_len, &record, NULL, 0))
+    {
+        struct mg_dns_header* header = (struct mg_dns_header*)connection->recv.buf;
+        uint16_t txnid = mg_ntohs(header->txnid);
+
+        struct dns_item* item;
+        HASH_FIND_UINT16(dns_queue, &txnid, item);
+
+        if (item != NULL)
+        {
+            struct mg_dns_header* header = (struct mg_dns_header*)connection->recv.buf;
+            header->txnid = mg_htons(item->peer_txnid);
+
+            dns_connection->peer = item->peer;
+            mg_send(dns_connection, connection->recv.buf, connection->recv.len);
+
+            dns_queue_remove(item);
+        }
+    }
 }
 
 void dns_resolved(struct mg_connection* connection, int event, void* event_data, void* fn_data)
 {
     if (event == MG_EV_POLL)
     {
-        unsigned long now = mg_millis();
-
-        struct dns_item* item, * tmp;
-        for (item = dns_queue; item != NULL; item = tmp)
-        {
-            tmp = item->next;
-            if (now > item->expire)
-                dns_queue_remove(item);
-        }
+        if (!connection->is_readable)
+            dns_queue_clean_expired();
     }
     else if (event == MG_EV_READ)
     {
-        struct mg_dns_message message;
-        int resolved = 0;
-
-        struct mg_dns_rr record;
-        if (dns_parse(false, connection->recv.buf, connection->recv.len, dns_header_len, &record, NULL, 0))
-        {
-            struct mg_dns_header* header = (struct mg_dns_header*)connection->recv.buf;
-            uint16_t txnid = mg_ntohs(header->txnid);
-
-            struct dns_item*item, * next;
-            for (item = dns_queue; item != NULL; item = next)
-            {
-                next = item->next;
-                if (item->txnid != txnid)
-                    continue;
-
-                struct mg_dns_header* header = (struct mg_dns_header*)connection->recv.buf;
-                header->txnid = mg_htons(item->peer_txnid);
-
-                dns_connection->peer = item->peer;
-                mg_send(dns_connection, connection->recv.buf, connection->recv.len);
-
-                dns_queue_remove(item);
-            }
-        }
+        dns_queue_answer(connection);
+        dns_queue_clean_expired();
 
         mg_iobuf_delete(&connection->recv, connection->recv.len);
     }
@@ -223,30 +232,34 @@ void dns_answer_zero(struct mg_connection* connection, struct mg_dns_rr* record)
     free(answer_data);
 }
 
-void dns_answer_resolve(struct mg_connection* connection, struct mg_dns_rr* record)
+void dns_answer_resolve(struct mg_connection* connection)
 {
-    struct mg_dns_header* header = (struct mg_dns_header*)connection->recv.buf;
-    struct dns_item* item = dns_queue_add(&connection->peer, mg_htons(header->txnid));
+    if (dns_queue_len < dns_queue_max)
+    {
+        struct mg_dns_header* header = (struct mg_dns_header*)connection->recv.buf;
+        struct dns_item* item = dns_queue_add(&connection->peer, mg_htons(header->txnid));
 
-    header->txnid = mg_htons(item->txnid);
-    mg_send(dns_ext_connection, connection->recv.buf, connection->recv.len);
+        if (item != NULL)
+        {
+            header->txnid = mg_htons(item->txnid);
+            mg_send(dns_ext_connection, connection->recv.buf, connection->recv.len);
+        }
+    }
 }
 
 void dns_listen(struct mg_connection* connection, int event, void* event_data, void* fn_data)
 {
     if (event == MG_EV_READ)
     {
-        if (dns_queue_len < dns_queue_max)
+        struct mg_dns_rr record;
+        char dns_name[dns_name_max];
+
+        if (dns_parse(true, connection->recv.buf, connection->recv.len, dns_header_len, &record, &dns_name, dns_name_max))
         {
-            struct mg_dns_rr record;
-            char dns_name[dns_name_max];
-            if (dns_parse(true, connection->recv.buf, connection->recv.len, dns_header_len, &record, &dns_name, dns_name_max))
-            {
-                if (dns_check_filter(dns_name, &record))
-                    dns_answer_zero(connection, &record);
-                else
-                    dns_answer_resolve(connection, &record);
-            }
+            if (dns_check_filter(dns_name, &record))
+                dns_answer_zero(connection, &record);
+            else
+                dns_answer_resolve(connection);
         }
 
         mg_iobuf_delete(&connection->recv, connection->recv.len); 
@@ -276,7 +289,7 @@ int main(void)
         return exit_error("set_socket_buf failed");
 
     while (true)
-        mg_mgr_udp_poll(&mgr, 1000);
+        mg_mgr_udp_poll(&mgr, socket_timeout);
 
     return 0;
 }

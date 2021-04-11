@@ -17,5 +17,8 @@
     <ClInclude Include="src\mongoose.h">
       <Filter>src</Filter>
     </ClInclude>
+    <ClInclude Include="src\uthash.h">
+      <Filter>src</Filter>
+    </ClInclude>
   </ItemGroup>
 </Project>
