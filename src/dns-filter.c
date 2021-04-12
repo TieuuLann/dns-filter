@@ -333,8 +333,12 @@ bool read_file_lines(const char* file, const read_line_cb callback)
 
     fseek(f, 0, SEEK_END);
     long fsize = ftell(f);
-    if (fsize <= 0)
-        return false;
+
+    if (fsize == 0)
+    {
+        fclose(f);
+        return true;
+    }
 
     unsigned char* buf = calloc(1, fsize);
     fseek(f, 0, SEEK_SET);
@@ -355,8 +359,8 @@ bool read_file_lines(const char* file, const read_line_cb callback)
 
             if (!callback(head, ltail - head + 1))
             {
-                read_ok = false;
-                break;
+                free(buf);
+                return false;                
             }
 
             head = pos + 1;
@@ -364,7 +368,7 @@ bool read_file_lines(const char* file, const read_line_cb callback)
     }
 
     free(buf);
-    return read_ok;
+    return true;
 }
 
 bool read_dns_line(const char* line, size_t len)
