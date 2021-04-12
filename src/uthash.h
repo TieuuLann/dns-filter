@@ -478,6 +478,11 @@ do {                                                                            
 } while (0)
 
 /* convenience forms of HASH_FIND/HASH_ADD/HASH_DEL */
+#define HASH_ADD_STRN(head,strfield,strlen,add)                                  \
+    HASH_ADD(hh, head, strfield[0], strlen, add)
+#define HASH_FIND_STRN(head,findstr,strlen,out)                                   \
+    HASH_FIND(hh, head, findstr, strlen, out);
+
 #define HASH_FIND_STR(head,findstr,out)                                          \
 do {                                                                             \
     unsigned _uthash_hfstr_keylen = (unsigned)uthash_strlen(findstr);            \

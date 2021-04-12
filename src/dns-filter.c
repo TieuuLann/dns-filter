@@ -10,6 +10,7 @@
 #define dns_name_max 256
 #define dns_queue_max 65536
 #define dns_header_len sizeof(struct mg_dns_header)
+#define dns_listen_url "udp://0.0.0.0:53"
 
 #define socket_timeout 1000
 #define socket_buf_size (512 * 1024)
@@ -33,6 +34,12 @@ struct dns_item
     uint16_t peer_txnid;
 };
 
+struct host_addr
+{
+    UT_hash_handle hh;
+    char* addr;
+};
+
 #pragma pack(push, 1)
 struct dns_answer
 {
@@ -50,9 +57,12 @@ struct dns_answer
 
 struct mg_mgr* mgr = NULL;
 struct mg_connection* dns_connection = NULL;
+
 struct dns_server* dns_servers = NULL;
 struct dns_server* dns_servers_tail = NULL;
+uint32_t dns_servers_count = 0;
 
+struct host_addr* host_addrs = NULL;
 struct dns_item* dns_queue = NULL;
 uint32_t dns_queue_len = 0;
 uint16_t dns_queue_txnid = 0;
@@ -81,47 +91,68 @@ bool set_socket_buf(SOCKET socket, int rcvSize, int sndSize)
     return (r1 == 0 && r2 == 0);
 }
 
-bool dns_parse(bool is_question, const uint8_t* buf, size_t len, size_t ofs, struct mg_dns_rr* record, char* name, size_t name_len) 
+int dns_parse_record(bool is_question, const uint8_t* buf, size_t len, size_t ofs, struct mg_dns_rr* record, char* name, size_t name_len)
 {
     const struct mg_dns_header* header = (struct mg_dns_header*)buf;
     const uint8_t* s = buf + ofs, *e = &buf[len];
-    if (len < sizeof(*header) || len > 512 || s >= e)
-        return false;
-
-    uint16_t num_answers = mg_ntohs(header->num_answers);
-    if (mg_ntohs(header->num_questions) > 1 || num_answers > (is_question ? 0 : 10))
-        return false;
+    if (len < dns_header_len || len > 512 || s >= e)
+        return 0;
 
     memset(record, 0, sizeof(*record));
     if ((record->nlen = (uint16_t)mg_dns_parse_name(buf, len, ofs, name, name_len)) == 0)
-        return false;
+        return 0;
 
     s += record->nlen + 4;
     if (s > e) 
-        return false;
+        return 0;
 
     record->atype = ((uint16_t)s[-4] << 8) | s[-3];
     record->aclass = ((uint16_t)s[-2] << 8) | s[-1];
     if (is_question)
-        return true;
+        return record->nlen + 4;
 
-    for (uint16_t i = 0; i < num_answers; i++)
+    s += 6;
+    if (s > e) 
+        return 0;
+
+    record->alen = ((uint16_t)s[-2] << 8) | s[-1];
+    if (s + record->alen > e) 
+        return 0;
+
+    return record->nlen + record->alen + 10;
+}
+
+bool dns_parse(bool is_question, const uint8_t* buf, size_t len, struct mg_dns_rr* record, char* name, size_t name_len)
+{
+    if (len < dns_header_len)
+        return false;
+
+    const struct mg_dns_header* header = (struct mg_dns_header*)buf;
+    uint16_t num_answers = mg_ntohs(header->num_answers);
+    uint16_t num_questions = mg_ntohs(header->num_questions);
+    if (num_questions > 1 || num_answers > (is_question ? 0 : 10))
+        return false;
+
+    size_t ofs = dns_header_len;
+    for (size_t i = 0; i < num_questions; i++)
     {
-        s += 12;
-        if (s > e) 
+        size_t n = dns_parse_record(true, buf, len, ofs, record, name, name_len);
+        if (n == 0)
             return false;
 
-        record->alen = ((uint16_t)s[-2] << 8) | s[-1];
-        
-        if (record->atype == 1 && record->alen != 4)
+        ofs += n;
+    }
+
+    for (size_t i = 0; i < num_answers; i++)
+    {
+        struct mg_dns_rr answer_record;
+        char answer_name[dns_name_max];
+
+        size_t n = dns_parse_record(false, buf, len, ofs, &answer_record, &answer_name, dns_name_max);
+        if (n == 0) 
             return false;
 
-        if (record->atype == 28 && record->alen != 16)
-            return false;
-
-        s += record->alen;
-        if (s > e)
-            return false;
+        ofs += n;
     }
 
     return true;
@@ -181,7 +212,9 @@ void dns_queue_clean_expired()
 void dns_queue_answer(struct mg_connection* connection)
 {
     struct mg_dns_rr record;
-    if (dns_parse(false, connection->recv.buf, connection->recv.len, dns_header_len, &record, NULL, 0))
+    char dns_name[dns_name_max];
+
+    if (dns_parse(false, connection->recv.buf, connection->recv.len, &record, &dns_name, dns_name_max))
     {
         struct mg_dns_header* header = (struct mg_dns_header*)connection->recv.buf;
         uint16_t txnid = mg_ntohs(header->txnid);
@@ -223,8 +256,14 @@ bool dns_check_filter(const char* name, struct mg_dns_rr* record)
     if (record->atype != 1 && record->atype != 28)
         return false;
 
-    //printf("%s %u\n", name, record->atype);
-    return (strcmp(name, "mail.ru") == 0);
+    struct host_addr* item = NULL;
+    HASH_FIND_STRN(host_addrs, name, strlen(name), item);
+    if (item == NULL)
+        return false;
+
+    const char* addr_type = (record->atype == 1) ? "A" : "AAAA";
+    printf("blocked %s %s\n", name, addr_type);
+    return true;
 }
 
 void dns_answer_zero(struct mg_connection* connection, struct mg_dns_rr* record)
@@ -274,7 +313,7 @@ void dns_listen(struct mg_connection* connection, int event, void* event_data, v
         struct mg_dns_rr record;
         char dns_name[dns_name_max];
 
-        if (dns_parse(true, connection->recv.buf, connection->recv.len, dns_header_len, &record, &dns_name, dns_name_max))
+        if (dns_parse(true, connection->recv.buf, connection->recv.len, &record, &dns_name, dns_name_max))
         {
             if (dns_check_filter(dns_name, &record))
                 dns_answer_zero(connection, &record);
@@ -330,54 +369,97 @@ bool read_file_lines(const char* file, const read_line_cb callback)
 
 bool read_dns_line(const char* line, size_t len)
 {
-    if (len >= ip_str_min && len <= ip_str_max && line[0] != '#')
+    if (len < ip_str_min || len > ip_str_max || line[0] == '#')
+        return true;
+
+    char addr[40];
+    memcpy(&addr, "udp://", 6);
+    memcpy(&addr[6], line, len);
+    memcpy(&addr[6 + len], ":53\0", 4);
+
+    struct dns_server* server = calloc(1, sizeof(struct dns_server));
+    server->connection = mg_connect(mgr, addr, NULL, NULL);
+    if (server->connection == NULL)
+        return false;
+
+    server->connection->fn = dns_resolved;
+    if (!fix_udp_behavior(server->connection->fd) ||
+        !set_socket_buf(server->connection->fd, socket_buf_size, socket_buf_size))
+        return false;
+
+    if (dns_servers == NULL)
     {
-        char addr[40];
-        memcpy(&addr, "udp://", 6);
-        memcpy(&addr[6], line, len);
-        memcpy(&addr[6 + len], ":53\0", 4);
-
-        struct dns_server* server = calloc(1, sizeof(struct dns_server));
-        server->connection = mg_connect(mgr, addr, NULL, NULL);
-        if (server->connection == NULL)
-            return false;
-
-        server->connection->fn = dns_resolved;
-        if (!fix_udp_behavior(server->connection->fd))
-            return false;
-
-        if (dns_servers == NULL)
-        {
-            dns_servers = server;
-            dns_servers_tail = server;
-        }
-        else
-        {
-            dns_servers_tail->next = server;
-            dns_servers_tail = server;
-        }
+        dns_servers = server;
+        dns_servers_tail = server;
+    }
+    else
+    {
+        dns_servers_tail->next = server;
+        dns_servers_tail = server;
     }
 
+    dns_servers_count++;
+    return true;
+}
+
+bool read_hosts_line(const char* line, size_t len)
+{
+    if (len < ip_str_min || line[0] == '#')
+        return true;
+
+    char* space = memchr(line, ' ', len);
+    if (space == NULL)
+        return true;
+
+    size_t ip_len = space - line;
+    if (ip_len != ip_str_min)
+        return true;
+
+    if (strncmp(line, "0.0.0.0", ip_str_min) != 0)
+        return true;
+
+    size_t addr_len = len - ip_len - 1;
+    if (addr_len == 0)
+        return true;
+
+    char* addr = calloc(1, addr_len + 1);
+    memcpy(addr, space + 1, addr_len);
+    
+    struct host_addr* item = NULL;
+    HASH_FIND_STRN(host_addrs, addr, addr_len, item);
+    if (item != NULL)
+        return true;
+
+    item = (struct host_addr*)calloc(1, sizeof(*item));
+    item->addr = addr;
+
+    HASH_ADD_STRN(host_addrs, addr, addr_len, item);
     return true;
 }
 
 int main(void) 
 {
+    if (!read_file_lines("hosts.txt", read_hosts_line))
+        return info_error("read hosts.txt failed");
+
+    printf("loaded %u items from hosts.txt\n", HASH_COUNT(host_addrs));
+    
     mgr = calloc(1, sizeof(struct mg_mgr));
     mg_mgr_init(mgr);
 
-    dns_connection = mg_listen(mgr, "udp://0.0.0.0:53", dns_listen, NULL);
+    dns_connection = mg_listen(mgr, dns_listen_url, dns_listen, NULL);
     if (dns_connection == NULL)
         return info_error("listen udp port 53 failed");
 
-    if (!fix_udp_behavior(dns_connection->fd))
-        return info_error("fix_udp_behavior failed");
+    if (!fix_udp_behavior(dns_connection->fd) ||
+        !set_socket_buf(dns_connection->fd, socket_buf_size, socket_buf_size))
+        return info_error("dns_connection socket set failed");
 
     if (!read_file_lines("dns.txt", read_dns_line) || dns_servers == NULL)
         return info_error("read dns.txt failed");
 
-    if (!set_socket_buf(dns_connection->fd, socket_buf_size, socket_buf_size))
-        return info_error("set_socket_buf failed");
+    printf("loaded %u items from dns.txt\n", dns_servers_count);
+    printf("listening on %s...\n", dns_listen_url);
 
     while (true)
         mg_mgr_udp_poll(mgr, socket_timeout);
