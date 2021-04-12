@@ -22,6 +22,6 @@ Current source code components:
 3. Be happy
 
 ## Compilation on Linux:
-1. Run **gcc -w src/\*.c -o dns-filtergcc -w src/*.c -o dns-filter** within project folder
+1. Run **gcc -w src/*.c -o dns-filter** within project folder
 2. Run **sudo ./dns-filter** to start it
 3. Be happy
