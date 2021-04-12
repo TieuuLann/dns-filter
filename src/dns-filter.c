@@ -3,6 +3,9 @@
 #include "mongoose.h"
 #include "uthash.h"
 
+#define ip_str_min 7
+#define ip_str_max 15
+
 #define dns_timeout 500
 #define dns_name_max 256
 #define dns_queue_max 65536
@@ -10,6 +13,14 @@
 
 #define socket_timeout 1000
 #define socket_buf_size (512 * 1024)
+
+typedef bool (*read_line_cb)(const char* line, size_t len);
+
+struct dns_server
+{
+    struct dns_server* next;
+    struct mg_connection* connection;
+};
 
 struct dns_item
 {
@@ -37,14 +48,21 @@ struct dns_answer
 };
 #pragma pack(pop)
 
-
+struct mg_mgr* mgr = NULL;
 struct mg_connection* dns_connection = NULL;
-struct mg_connection* dns_ext_connection = NULL;
+struct dns_server* dns_servers = NULL;
+struct dns_server* dns_servers_tail = NULL;
 
 struct dns_item* dns_queue = NULL;
 uint32_t dns_queue_len = 0;
 uint16_t dns_queue_txnid = 0;
 unsigned long dns_queue_clean_time = 0;
+
+int info_error(const char* text)
+{
+    printf("%s\n", text);
+    return 1;
+}
 
 bool fix_udp_behavior(SOCKET socket)
 {
@@ -242,7 +260,9 @@ void dns_answer_resolve(struct mg_connection* connection)
         if (item != NULL)
         {
             header->txnid = mg_htons(item->txnid);
-            mg_send(dns_ext_connection, connection->recv.buf, connection->recv.len);
+
+            for (struct dns_server* server = dns_servers; server != NULL; server = server->next)
+                mg_send(server->connection, connection->recv.buf, connection->recv.len);
         }
     }
 }
@@ -266,30 +286,101 @@ void dns_listen(struct mg_connection* connection, int event, void* event_data, v
     }
 }
 
-int exit_error(const char* error)
+bool read_file_lines(const char* file, const read_line_cb callback)
 {
-    printf("%s\n", error);
-    return 1;
+    FILE* f = fopen(file, "rb");
+    if (f == NULL)
+        return false;
+
+    fseek(f, 0, SEEK_END);
+    long fsize = ftell(f);
+    if (fsize <= 0)
+        return false;
+
+    unsigned char* buf = calloc(1, fsize);
+    fseek(f, 0, SEEK_SET);
+    fread(buf, 1, fsize, f);
+    fclose(f);
+
+    unsigned char* head = buf;
+    unsigned char* pos = buf;
+    unsigned char* tail = buf + fsize;
+    bool read_ok = true;
+
+    for (; pos <= tail; pos++)
+    {
+        if (*pos == '\n' || pos == tail)
+        {
+            unsigned char* ltail = pos;
+            while (--ltail >= head && *ltail == '\r') { }
+
+            if (!callback(head, ltail - head + 1))
+            {
+                read_ok = false;
+                break;
+            }
+
+            head = pos + 1;
+        }
+    }
+
+    free(buf);
+    return read_ok;
+}
+
+bool read_dns_line(const char* line, size_t len)
+{
+    if (len >= ip_str_min && len <= ip_str_max && line[0] != '#')
+    {
+        char addr[40];
+        memcpy(&addr, "udp://", 6);
+        memcpy(&addr[6], line, len);
+        memcpy(&addr[6 + len], ":53\0", 4);
+
+        struct dns_server* server = calloc(1, sizeof(struct dns_server));
+        server->connection = mg_connect(mgr, addr, NULL, NULL);
+        if (server->connection == NULL)
+            return false;
+
+        server->connection->fn = dns_resolved;
+        if (!fix_udp_behavior(server->connection->fd))
+            return false;
+
+        if (dns_servers == NULL)
+        {
+            dns_servers = server;
+            dns_servers_tail = server;
+        }
+        else
+        {
+            dns_servers_tail->next = server;
+            dns_servers_tail = server;
+        }
+    }
+
+    return true;
 }
 
 int main(void) 
 {
-    struct mg_mgr mgr;
+    mgr = calloc(1, sizeof(struct mg_mgr));
+    mg_mgr_init(mgr);
 
-    mg_mgr_init(&mgr);
-    dns_connection = mg_listen(&mgr, "udp://0.0.0.0:53", dns_listen, NULL);
-    dns_ext_connection = mg_connect(&mgr, "udp://8.8.8.8:53", NULL, NULL);
-    dns_ext_connection->fn = dns_resolved;
+    dns_connection = mg_listen(mgr, "udp://0.0.0.0:53", dns_listen, NULL);
+    if (dns_connection == NULL)
+        return info_error("listen udp port 53 failed");
 
-    if (!fix_udp_behavior(dns_connection->fd) ||
-        !fix_udp_behavior(dns_ext_connection->fd))
-        return exit_error("fix_udp_connreset failed");
+    if (!fix_udp_behavior(dns_connection->fd))
+        return info_error("fix_udp_behavior failed");
+
+    if (!read_file_lines("dns.txt", read_dns_line) || dns_servers == NULL)
+        return info_error("read dns.txt failed");
 
     if (!set_socket_buf(dns_connection->fd, socket_buf_size, socket_buf_size))
-        return exit_error("set_socket_buf failed");
+        return info_error("set_socket_buf failed");
 
     while (true)
-        mg_mgr_udp_poll(&mgr, socket_timeout);
+        mg_mgr_udp_poll(mgr, socket_timeout);
 
     return 0;
 }
