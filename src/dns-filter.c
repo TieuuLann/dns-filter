@@ -130,7 +130,7 @@ bool dns_parse(bool is_question, const uint8_t* buf, size_t len, struct mg_dns_r
     const struct mg_dns_header* header = (struct mg_dns_header*)buf;
     uint16_t num_answers = mg_ntohs(header->num_answers);
     uint16_t num_questions = mg_ntohs(header->num_questions);
-    if (num_questions > 1 || num_answers > (is_question ? 0 : 10))
+    if (num_questions > 1 || num_answers > (is_question ? 0 : 12))
         return false;
 
     size_t ofs = dns_header_len;
