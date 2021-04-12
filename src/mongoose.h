@@ -23,8 +23,6 @@
 #define MG_IO_SIZE (1 * 1024)
 #define MG_MAX_RECV_BUF_SIZE MG_IO_SIZE
 
-void mg_mgr_udp_poll(struct mg_mgr* mgr, int ms);
-
 #define MG_VERSION "7.2"
 
 
@@ -659,6 +657,7 @@ struct mg_connection {
 };
 
 void mg_mgr_poll(struct mg_mgr *, int ms);
+void mg_mgr_poll_udp(struct mg_mgr* mgr, int ms);
 void mg_mgr_init(struct mg_mgr *);
 void mg_mgr_free(struct mg_mgr *);
 

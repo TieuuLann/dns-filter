@@ -473,7 +473,7 @@ int main(void)
     printf("listening on %s...\n", dns_listen_url);
 
     while (true)
-        mg_mgr_udp_poll(mgr, socket_timeout);
+        mg_mgr_poll_udp(mgr, socket_timeout);
 
     return 0;
 }

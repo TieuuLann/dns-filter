@@ -3158,7 +3158,7 @@ void mg_mgr_poll(struct mg_mgr *mgr, int ms) {
   }
 }
 
-void mg_mgr_udp_poll(struct mg_mgr* mgr, int ms)
+void mg_mgr_poll_udp(struct mg_mgr* mgr, int ms)
 {
     mg_iotest(mgr, ms);
 
