@@ -13,7 +13,7 @@ Current source code components:
 * unlimited number of upstream DNS servers (see file **dns.txt**)
 * unlimited number of filtered domains (see file **hosts.txt**)
 * capable to process up to 64k DNS requests simultaneously
-* written in pure С (cross-platform, checked for windows and linux)
+* written in pure С (cross-platform, tested on windows and linux)
 * everything except above is not supported (TCP handling, DoH, DoT etc)
 
 ## Compilation on Windows:
