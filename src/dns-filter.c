@@ -77,7 +77,7 @@ int info_error(const char* text)
     return 1;
 }
 
-bool fix_udp_behavior(SOCKET socket)
+bool fix_udp_behavior(void* socket)
 {
 #if _WIN32
     BOOL bValue = FALSE;
@@ -91,7 +91,7 @@ bool fix_udp_behavior(SOCKET socket)
 #endif
 }
 
-bool set_socket_buf(SOCKET socket, int rcvSize, int sndSize)
+bool set_socket_buf(void* socket, int rcvSize, int sndSize)
 {
     int r1 = setsockopt(socket, SOL_SOCKET, SO_RCVBUF, &rcvSize, sizeof(rcvSize));
     int r2 = setsockopt(socket, SOL_SOCKET, SO_SNDBUF, &sndSize, sizeof(sndSize));
