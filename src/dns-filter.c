@@ -1,5 +1,8 @@
+#if _WIN32
 #include <winsock2.h>
 #include <mswsock.h>
+#endif
+
 #include "mongoose.h"
 #include "uthash.h"
 
@@ -76,12 +79,16 @@ int info_error(const char* text)
 
 bool fix_udp_behavior(SOCKET socket)
 {
+#if _WIN32
     BOOL bValue = FALSE;
     DWORD dwBytesReturned = 0;
 
     int r1 = WSAIoctl(socket, SIO_UDP_CONNRESET, &bValue, sizeof(bValue), NULL, 0, &dwBytesReturned, NULL, NULL);
     int r2 = WSAIoctl(socket, SIO_UDP_NETRESET, &bValue, sizeof(bValue), NULL, 0, &dwBytesReturned, NULL, NULL);
     return (r1 == 0 && r2 == 0);
+#else
+    return true;
+#endif
 }
 
 bool set_socket_buf(SOCKET socket, int rcvSize, int sndSize)
