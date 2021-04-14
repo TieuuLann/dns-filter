@@ -443,7 +443,7 @@ bool read_listen_line(const char* line, size_t len)
 
     struct mg_connection* connection = mg_listen(mgr, &addr, dns_listen, NULL);
     if (connection == false)
-        return;
+        return false;
 
     if (!fix_udp_behavior(connection->fd) ||
         !set_socket_buf(connection->fd, socket_buf_size, socket_buf_size))
