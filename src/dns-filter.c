@@ -442,7 +442,7 @@ bool read_listen_line(const char* line, size_t len)
     memcpy(&addr[6 + len], ":53\0", 4);
 
     struct mg_connection* connection = mg_listen(mgr, &addr, dns_listen, NULL);
-    if (connection == FALSE)
+    if (connection == false)
         return;
 
     if (!fix_udp_behavior(connection->fd) ||
