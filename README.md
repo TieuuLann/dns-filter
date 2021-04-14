@@ -11,7 +11,8 @@ Current source code components:
 * only one async socket
 * no caching
 * unlimited number of upstream DNS servers (see file **dns.txt**)
-* unlimited number of filtered domains (see file **hosts.txt**)
+* unlimited number of filtered domains (see file **block.txt**)
+* selective interfaces to listen on (see file **listen.txt**)
 * capable to process up to 64k DNS requests simultaneously
 * written in pure С (cross-platform, tested on windows and linux)
 * everything except above is not supported (TCP handling, DoH, DoT etc)
