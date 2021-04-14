@@ -23,6 +23,6 @@ Current source code components:
 3. Be happy
 
 ## Compilation on Linux:
-1. Run **gcc -w src/*.c -o dns-filter** within project folder
+1. Run **./build.sh** within project folder and build it
 2. Run **sudo ./dns-filter** to start it
 3. Be happy
