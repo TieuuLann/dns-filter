@@ -1,5 +1,5 @@
 # dns-filter
-This is a very basic tiny DNS server with ability to filter requests. Suitable for simple ad blocking, minimalistic Pi-hole analog. 
+This is a very basic tiny DNS server with ability to filter requests. Suitable for simple ad blocking, minimalistic Pi-hole/AdGuardHome analog. 
 
 Current source code components:
 * Mongoose (https://github.com/cesanta/mongoose)
